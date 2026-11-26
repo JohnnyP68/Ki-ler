@@ -58,6 +58,14 @@ label input,label select{margin-top:3px}
 .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap}
 .empty{text-align:center;color:var(--muted);padding:30px 0}
 @media (max-width:520px){.grid{grid-template-columns:1fr}}
+input.auto{border-color:var(--warn);box-shadow:0 0 0 2px var(--warnbg)}
+#scanBox{margin-bottom:12px}
+#scanBox img{max-width:100%;max-height:220px;border:1px solid var(--line);border-radius:8px;display:block;margin:6px 0}
+#scanBox pre{white-space:pre-wrap;font-size:.78rem;max-height:200px;overflow:auto;background:var(--chip);padding:8px;border-radius:8px}
+.hint{background:var(--warnbg);color:var(--warn);border-radius:8px;padding:6px 10px;font-size:.85rem}
+#scanDlg{text-align:center}
+.prog{height:8px;background:var(--chip);border-radius:99px;overflow:hidden;margin:12px 0}
+.prog div{height:100%;width:0;background:var(--accent);transition:width .2s}
 </style>
 </head>
 <body>
@@ -67,7 +75,9 @@ label input,label select{margin-top:3px}
   <div class="tiles" id="tiles"></div>
 
   <div class="bar">
-    <button class="primary" id="addBtn">+ Neue Rechnung</button>
+    <button class="primary" id="scanBtn">📷 Rechnung scannen</button>
+    <button id="addBtn">+ Manuell</button>
+    <input type="file" id="scanFile" accept="image/*,application/pdf" multiple hidden>
     <select id="filter" style="width:auto">
       <option value="open">Offene</option>
       <option value="pay">a) Noch zu überweisen</option>
@@ -90,12 +100,18 @@ label input,label select{margin-top:3px}
 <dialog id="dlg">
   <form id="form" method="dialog">
     <h3 id="dlgTitle" style="margin-top:0">Rechnung</h3>
+    <div id="scanBox" hidden>
+      <div class="hint" id="scanHint"></div>
+      <img id="scanImg" alt="Gescannte Rechnung">
+      <details><summary class="muted">Erkannter Text anzeigen</summary><pre id="scanText"></pre></details>
+    </div>
     <div class="grid">
       <label class="full">Arzt / Leistungserbringer<input name="doctor" required></label>
       <label>Rechnungsnummer<input name="number"></label>
       <label>Betrag (€)<input name="amount" type="number" step="0.01" min="0" required></label>
       <label>Rechnungsdatum<input name="date" type="date" required></label>
       <label>Zahlungsfrist bis<input name="due" type="date"></label>
+      <label class="full">IBAN des Empfängers<input name="iban" autocomplete="off"></label>
       <label>Beihilfe-Satz (%)<input name="bhRate" type="number" min="0" max="100" step="1"></label>
       <label>PKV-Anteil (%)<input name="pkvRate" type="number" min="0" max="100" step="1"></label>
       <label class="full check"><input type="checkbox" name="pkvSkip"> Nicht bei der PKV einreichen (z.&nbsp;B. wegen Beitragsrückerstattung)</label>
@@ -116,6 +132,13 @@ label input,label select{margin-top:3px}
       <button type="submit" class="primary">Speichern</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="scanDlg">
+  <h3 style="margin-top:0">Rechnung wird gelesen …</h3>
+  <div class="prog"><div id="scanBar"></div></div>
+  <div class="muted" id="scanStatus">Vorbereiten</div>
+  <p class="muted" style="font-size:.8rem">Die Texterkennung läuft auf Ihrem Gerät – das Bild wird nicht hochgeladen. Beim ersten Mal werden ca. 10&nbsp;MB Erkennungsdaten geladen.</p>
 </dialog>
 
 <script>
@@ -185,7 +208,8 @@ function render(){
     let pay;
     if(!s.needPay) pay = step('done','a) Überwiesen',`am ${fmt(b.paidOn)}`);
     else { const late = b.due && b.due < t; const soon = b.due && !late && daysBetween(t,b.due)<=7;
-      pay = step(late?'late':soon?'soon':'','a) Überweisen', b.due?`fällig ${fmt(b.due)}${late?' – überfällig!':''}`:'offen', b.id,'paidOn','Heute überwiesen'); }
+      const bank = b.iban ? `<br>IBAN ${esc(b.iban)}${b.number?`<br>Zweck: Rechnung ${esc(b.number)}`:''}` : '';
+      pay = step(late?'late':soon?'soon':'','a) Überweisen', (b.due?`fällig ${fmt(b.due)}${late?' – überfällig!':''}`:'offen') + bank, b.id,'paidOn','Heute überwiesen'); }
     // b) + c) Beihilfe
     const bhDeadline = addMonths(b.date, BH_DEADLINE_MONTHS);
     let bh;
@@ -243,15 +267,31 @@ $('#list').addEventListener('click', ev=>{
 // Dialog
 const form = $('#form'), dlg = $('#dlg');
 let editing = null;
-function openDlg(id){
+function openDlg(id, scan){
   editing = id || null;
-  const b = id ? bills.find(x=>x.id===id) : { date: today(), due: addDays(today(), settings.payDays), bhRate: settings.bhRate, pkvRate: settings.pkvRate };
-  $('#dlgTitle').textContent = id ? 'Rechnung bearbeiten' : 'Neue Rechnung';
+  let b = id ? bills.find(x=>x.id===id) : { date: today(), due: addDays(today(), settings.payDays), bhRate: settings.bhRate, pkvRate: settings.pkvRate };
+  const found = scan ? scan.fields : {};
+  if(scan){
+    b = { ...b, ...found };
+    if(found.date && !found.due) b.due = addDays(found.date, settings.payDays);
+  }
+  $('#dlgTitle').textContent = id ? 'Rechnung bearbeiten' : scan ? 'Gescannte Rechnung prüfen' : 'Neue Rechnung';
   $('#delBtn').hidden = !id;
   for(const el of form.elements){ if(!el.name) continue;
+    el.classList.toggle('auto', el.name in found);
     if(el.type==='checkbox') el.checked = !!b[el.name]; else el.value = b[el.name] ?? ''; }
+  $('#scanBox').hidden = !scan;
+  if(scan){
+    const n = Object.keys(found).length;
+    const missing = ['doctor','amount','date'].filter(k=>!(k in found)).map(k=>({doctor:'Arzt',amount:'Betrag',date:'Rechnungsdatum'}[k]));
+    $('#scanHint').textContent = (n ? `${n} Felder automatisch erkannt (gelb markiert) – bitte prüfen.` : 'Es konnten keine Felder sicher erkannt werden.') +
+      (missing.length ? ` Nicht gefunden: ${missing.join(', ')}.` : '');
+    $('#scanImg').hidden = !scan.preview; if(scan.preview) $('#scanImg').src = scan.preview;
+    $('#scanText').textContent = scan.text || '(kein Text erkannt)';
+  }
   dlg.showModal();
 }
+form.addEventListener('input', ev=>ev.target.classList.remove('auto'));
 form.date.addEventListener('change', ()=>{ if(!editing && form.date.value) form.due.value = addDays(form.date.value, settings.payDays); });
 form.bhRate.addEventListener('input', ()=>{ const v=Number(form.bhRate.value); if(!isNaN(v)&&v>=0&&v<=100) form.pkvRate.value = 100-v; });
 form.addEventListener('submit', ev=>{
@@ -261,6 +301,11 @@ form.addEventListener('submit', ev=>{
     if(el.type==='checkbox') o[el.name]=el.checked;
     else if(el.type==='number') o[el.name] = el.value==='' ? null : Number(el.value);
     else o[el.name] = el.value || null; }
+  if(!editing){
+    const dup = bills.find(x => (o.number && x.number === o.number && x.doctor === o.doctor) ||
+                                (x.amount === o.amount && x.date === o.date && x.doctor === o.doctor));
+    if(dup && !confirm(`Diese Rechnung scheint schon erfasst zu sein (${dup.doctor}, ${fmt(dup.date)}, ${eur(dup.amount)}). Trotzdem speichern?`)) return;
+  }
   if(editing){ Object.assign(bills.find(x=>x.id===editing), o); }
   else { o.id = Date.now().toString(36)+Math.random().toString(36).slice(2,6); bills.push(o); }
   settings.bhRate = o.bhRate ?? settings.bhRate; settings.pkvRate = o.pkvRate ?? settings.pkvRate;
@@ -283,11 +328,203 @@ $('#importFile').onchange = async ev=>{
   ev.target.value='';
 };
 $('#csvBtn').onclick = ()=>{
-  const cols = ['doctor','number','date','amount','due','paidOn','bhRate','bhSent','bhRecvOn','bhRecv','pkvRate','pkvSkip','pkvSent','pkvRecvOn','pkvRecv','note'];
-  const head = ['Arzt','Rechnungsnr','Rechnungsdatum','Betrag','Fällig','Überwiesen','Beihilfe %','Beihilfe eingereicht','Beihilfe erhalten am','Beihilfe Betrag','PKV %','PKV nicht einreichen','PKV eingereicht','PKV erhalten am','PKV Betrag','Notiz'];
+  const cols = ['doctor','number','date','amount','due','iban','paidOn','bhRate','bhSent','bhRecvOn','bhRecv','pkvRate','pkvSkip','pkvSent','pkvRecvOn','pkvRecv','note'];
+  const head = ['Arzt','Rechnungsnr','Rechnungsdatum','Betrag','Fällig','IBAN','Überwiesen','Beihilfe %','Beihilfe eingereicht','Beihilfe erhalten am','Beihilfe Betrag','PKV %','PKV nicht einreichen','PKV eingereicht','PKV erhalten am','PKV Betrag','Notiz'];
   const q = v => { if(v==null) return ''; if(typeof v==='number') return String(v).replace('.',','); if(typeof v==='boolean') return v?'ja':'nein'; return '"'+String(v).replace(/"/g,'""')+'"'; };
   download(`arztrechnungen-${today()}.csv`, '﻿'+[head.join(';'), ...bills.map(b=>cols.map(c=>q(b[c])).join(';'))].join('\n'), 'text/csv');
 };
+
+// ---------- Scanner: Bild/PDF → Text (lokal im Browser) → Felder ----------
+const LIB = {
+  tesseract: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
+  tessWorker: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+  tessCore: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1',
+  tessLang: 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/deu@1.0.0/4.0.0_best_int',
+  pdf: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
+  pdfWorker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+};
+const loaded = {};
+function loadScript(src){
+  return loaded[src] ||= new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res;
+    s.onerror=()=>{ delete loaded[src]; rej(new Error('Programmteil konnte nicht geladen werden – besteht eine Internetverbindung?')); };
+    document.head.appendChild(s); });
+}
+let ocrWorker = null, progressBase = 0, progressSpan = 1;
+function setProgress(label, frac){
+  $('#scanStatus').textContent = label;
+  $('#scanBar').style.width = Math.round(Math.min(1, progressBase + progressSpan*(frac||0))*100) + '%';
+}
+async function getWorker(){
+  if(ocrWorker) return ocrWorker;
+  await loadScript(LIB.tesseract);
+  ocrWorker = await Tesseract.createWorker('deu', 1, {
+    workerPath: LIB.tessWorker, corePath: LIB.tessCore, langPath: LIB.tessLang,
+    logger: m => { if(m.status==='recognizing text') setProgress(`Texterkennung … ${Math.round(m.progress*100)} %`, m.progress);
+                   else if(/load|initializ/.test(m.status)) setProgress('Erkennung wird vorbereitet …', 0); }
+  });
+  return ocrWorker;
+}
+async function ocr(canvas){ const w = await getWorker(); const { data } = await w.recognize(canvas); return data.text; }
+
+// Bild verkleinern, in Graustufen wandeln, leicht Kontrast anheben
+function prepCanvas(src, w, h){
+  const scale = Math.min(1, 2400/Math.max(w,h));
+  const c = document.createElement('canvas'); c.width = Math.round(w*scale); c.height = Math.round(h*scale);
+  const ctx = c.getContext('2d'); ctx.drawImage(src, 0, 0, c.width, c.height);
+  const img = ctx.getImageData(0,0,c.width,c.height), d = img.data;
+  for(let i=0;i<d.length;i+=4){ let g = 0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; g = Math.max(0,Math.min(255,(g-128)*1.25+128)); d[i]=d[i+1]=d[i+2]=g; }
+  ctx.putImageData(img,0,0); return c;
+}
+function thumb(canvas){
+  const s = Math.min(1, 900/Math.max(canvas.width,canvas.height));
+  const c = document.createElement('canvas'); c.width=Math.round(canvas.width*s); c.height=Math.round(canvas.height*s);
+  c.getContext('2d').drawImage(canvas,0,0,c.width,c.height); return c.toDataURL('image/jpeg',0.7);
+}
+async function imageFileToCanvas(file){
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  return prepCanvas(bmp, bmp.width, bmp.height);
+}
+async function readPdf(file, pageNo){
+  await loadScript(LIB.pdf);
+  pdfjsLib.GlobalWorkerOptions.workerSrc = LIB.pdfWorker;
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pages = Math.min(pdf.numPages, 3); let text = '', preview = null;
+  for(let p=1; p<=pages; p++){
+    const page = await pdf.getPage(p);
+    // 1. Versuch: eingebetteter Text (digitale PDF)
+    const tc = await page.getTextContent(); const rows = new Map();
+    for(const it of tc.items){ if(!it.str) continue; const y = Math.round(it.transform[5]/3);
+      if(!rows.has(y)) rows.set(y, []); rows.get(y).push(it); }
+    let pageText = [...rows.entries()].sort((a,b)=>b[0]-a[0])
+      .map(([,its])=>its.sort((a,b)=>a.transform[4]-b.transform[4]).map(i=>i.str).join(' ').replace(/\s+/g,' ').trim()).join('\n');
+    const vp = page.getViewport({ scale: 2 });
+    const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+    await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    if(p===1) preview = thumb(c);
+    // 2. Versuch: eingescannte PDF ohne Text → OCR
+    if(pageText.replace(/\s/g,'').length < 40){
+      progressBase = (pageNo + (p-1)/pages); setProgress(`Seite ${p}: Texterkennung …`, 0);
+      pageText = await ocr(prepCanvas(c, c.width, c.height));
+    }
+    text += pageText + '\n';
+  }
+  return { text, preview };
+}
+
+async function scanFiles(files){
+  $('#scanDlg').showModal(); progressBase = 0; progressSpan = 1/files.length; setProgress('Vorbereiten …', 0);
+  let text = '', preview = null;
+  try{
+    for(let i=0;i<files.length;i++){
+      progressBase = i/files.length;
+      const f = files[i];
+      if(f.type === 'application/pdf' || /\.pdf$/i.test(f.name)){
+        const r = await readPdf(f, i); text += r.text + '\n'; preview ||= r.preview;
+      } else {
+        setProgress('Bild wird aufbereitet …', 0);
+        const c = await imageFileToCanvas(f); preview ||= thumb(c);
+        text += await ocr(c) + '\n';
+      }
+    }
+    setProgress('Felder werden ausgewertet …', 1);
+    $('#scanDlg').close();
+    openDlg(null, { text: text.trim(), preview, fields: parseInvoice(text) });
+  }catch(e){
+    $('#scanDlg').close();
+    alert('Scannen fehlgeschlagen: ' + (e && e.message || e));
+  }
+}
+$('#scanBtn').onclick = ()=>$('#scanFile').click();
+$('#scanFile').onchange = ev=>{ const fs=[...ev.target.files]; ev.target.value=''; if(fs.length) scanFiles(fs); };
+
+// ---------- Auswertung des erkannten Textes ----------
+const MONTHS = {januar:1,jan:1,februar:2,feb:2,märz:3,maerz:3,mär:3,april:4,apr:4,mai:5,juni:6,jun:6,juli:7,jul:7,august:8,aug:8,september:9,sep:9,sept:9,oktober:10,okt:10,november:11,nov:11,dezember:12,dez:12};
+function mkDate(d,m,y){
+  d=+d; m=+m; y=+y; if(y<100) y+=2000;
+  if(!(m>=1&&m<=12&&d>=1&&d<=31&&y>=2000&&y<=2100)) return null;
+  const iso = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  const t = new Date(iso+'T00:00:00'); return t.getDate()===d ? iso : null;
+}
+function datesIn(s){
+  const out = []; let m;
+  const re1 = /(?<!\d)(\d{1,2})\s?[.\/]\s?(\d{1,2})\s?[.\/]\s?(\d{4}|\d{2})(?!\d)/g;
+  while((m = re1.exec(s))){ const d = mkDate(m[1],m[2],m[3]); if(d) out.push(d); }
+  const re2 = /(?<!\d)(\d{1,2})\.?\s+(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember|jan|feb|mär|apr|jun|jul|aug|sept?|okt|nov|dez)\.?\s+(\d{4})/gi;
+  while((m = re2.exec(s))){ const d = mkDate(m[1], MONTHS[m[2].toLowerCase()], m[3]); if(d) out.push(d); }
+  return out;
+}
+function amountsIn(s){
+  const out = []; let m;
+  const re = /(?<![\d,.])(\d{1,3}(?:[.\s']\d{3})+|\d+)\s?,\s?(\d{2})(?!\d)/g;
+  while((m = re.exec(s))) out.push(parseFloat(m[1].replace(/[.\s']/g,'') + '.' + m[2]));
+  return out;
+}
+// Wert in derselben Zeile wie das Stichwort suchen, sonst in der nächsten
+function nearKeyword(lines, kw, extract, exclude){
+  const hits = [];
+  lines.forEach((l,i)=>{
+    if(!kw.test(l) || (exclude && exclude.test(l))) return;
+    const after = l.slice(l.search(kw));
+    let v = extract(after); if(!v.length) v = extract(l);
+    if(!v.length && lines[i+1]) v = extract(lines[i+1]);
+    if(v.length) hits.push(v);
+  });
+  return hits;
+}
+function parseInvoice(raw){
+  const text = raw.replace(/[|]/g,' ').replace(/[ \t]+/g,' ');
+  const lines = text.split(/\n/).map(l=>l.trim()).filter(Boolean);
+  const f = {}, t = today();
+
+  // Betrag
+  const strong = /rechnungsbetrag|gesamtbetrag|endbetrag|zahlbetrag|zahlungsbetrag|zu\s*zahlen(?:der)?|gesamtsumme|rechnungssumme|offener\s*betrag|bitte\s*überweisen/i;
+  const weak = /summe|gesamt|betrag|total/i;
+  const notAmt = /mwst|ust\b|umsatzsteuer|steuer|anzahlung|bereits\s*(?:gezahlt|bezahlt)|gutschrift|punkt|faktor|ziffer|iban/i;
+  let hits = nearKeyword(lines, strong, amountsIn, notAmt);
+  if(!hits.length) hits = nearKeyword(lines, weak, amountsIn, notAmt);
+  let amount = hits.length ? Math.max(...hits.map(h=>h[h.length-1])) : null;
+  if(amount == null){ const all = amountsIn(text); if(all.length) amount = Math.max(...all); }
+  if(amount != null && amount > 0 && amount < 100000) f.amount = Math.round(amount*100)/100;
+
+  // Zahlungsfrist
+  const dueKw = /zahlbar\s*bis|fällig\s*(?:am|bis|zum)?|zahlungsziel|bis\s*(?:spätestens\s*)?(?:zum|am)|spätestens\s*(?:am|bis)|zahlungsfrist|überweisen\s*bis/i;
+  const dueHit = nearKeyword(lines, dueKw, datesIn);
+  if(dueHit.length) f.due = dueHit[0][0];
+
+  // Rechnungsdatum
+  const dateKw = /rechnungsdatum|datum\s*der\s*rechnung|rechnung\s*vom|ausgestellt\s*am|^datum\b|\bdatum\s*:/i;
+  const notDate = /geb(?:urts|\.)|behandlung|leistungs|zeitraum|zahlbar|fällig|bis\s*zum|unfall/i;
+  const dHit = nearKeyword(lines, dateKw, datesIn, notDate).flat().filter(d=>d<=t);
+  if(dHit.length) f.date = dHit[0];
+  else {
+    const cand = lines.filter(l=>!notDate.test(l) && !dueKw.test(l)).flatMap(datesIn).filter(d=>d<=t && d>=addMonths(t,-24)).sort();
+    if(cand.length) f.date = cand[cand.length-1]; // Rechnungsdatum ist meist das späteste Datum
+  }
+  if(!f.due){ const m = text.match(/(?:innerhalb|binnen)\s*(?:von\s*)?(\d{1,3})\s*tag/i);
+    if(m && f.date) f.due = addDays(f.date, +m[1]); }
+
+  // Rechnungsnummer
+  const num = text.match(/(?:rechnungs?\s*-?\s*(?:nummer|nr\.?|no\.?)|re\.?\s*-?\s*nr\.?|beleg\s*-?\s*(?:nummer|nr\.?)|(?:rechnung|liquidation)\s+(?:nr\.?|nummer))[ \t]*[:#.]?[ \t]*([A-Z0-9][A-Z0-9\-\/.]*(?:[ \t]\d[A-Z0-9\-\/.]*)?)/i);
+  if(num && num[1].length >= 3 && !/^\d{1,2}\.\d{1,2}\.\d{2,4}$/.test(num[1])) f.number = num[1].replace(/[.\-\/]+$/,'');
+
+  // IBAN (deutsch, 22 Zeichen)
+  const ib = text.replace(/\n/g,' ').match(/\bDE\s?\d{2}(?:\s?[0-9O]{4}){4}\s?[0-9O]{2}\b/i);
+  if(ib){ const s = ib[0].toUpperCase().replace(/\s/g,'').replace(/(?<=^DE.*)O/g,'0'); f.iban = s.replace(/(.{4})/g,'$1 ').trim(); }
+
+  // Arzt / Leistungserbringer
+  const docKw = /\b(dr\.|prof\.|praxis|zahnarzt|zahnärzt|facharzt|fachärzt|ärztin|arzt\b|mvz|klinik|klinikum|krankenhaus|labor|radiolog|physiotherap|heilpraktiker|orthopäd|kieferorthopäd|gemeinschaftspraxis|psychotherap|augenarzt|dermatolog|internist|chirurg|apotheke)/i;
+  const notDoc = /^(herr|frau|herrn)\b|patient|versichert|rechnung\s*an|empfänger|iban|bic|bank|tel|fax|e-?mail|www\.|steuer|seite\s*\d/i;
+  let doctor = null;
+  const by = text.match(/(?:behandelnde[rn]?\s*(?:arzt|ärztin)|leistungserbringer(?:in)?|für\s*leistungen\s*von|im\s*auftrag\s*von)\s*[:]?\s*([^\n]{3,80})/i);
+  if(by) doctor = by[1];
+  if(!doctor){ const l = lines.slice(0, 25).find(l=>docKw.test(l) && !notDoc.test(l)); if(l) doctor = l; }
+  if(doctor){
+    const part = doctor.split(/\s[·•|–-]\s|,\s|\s{3,}/).find(p=>docKw.test(p)) || doctor;
+    f.doctor = part.replace(/\s*\d{5}\s.*$/,'').replace(/[^\p{L}\d.)\s&-]+$/u,'').trim().slice(0,70);
+    if(f.doctor.length < 3) delete f.doctor;
+  }
+  return f;
+}
 
 render();
 </script>
