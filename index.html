@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arztrechnungen</title>
+<style>
+:root{
+  --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#667085; --line:#e3e6eb;
+  --accent:#2563eb; --ok:#15803d; --okbg:#e8f6ee; --warn:#b45309; --warnbg:#fdf3e3;
+  --bad:#b91c1c; --badbg:#fdecec; --chip:#eef1f5;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#121417; --card:#1b1e23; --text:#e7e9ec; --muted:#9aa3af; --line:#2c3138;
+    --accent:#60a5fa; --ok:#4ade80; --okbg:#16301f; --warn:#fbbf24; --warnbg:#33290f;
+    --bad:#f87171; --badbg:#3a1a1a; --chip:#262a31;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:16px}
+h1{font-size:1.4rem;margin:.2rem 0 1rem}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.tile b{display:block;font-size:1.25rem}
+.tile span{color:var(--muted);font-size:.85rem}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+button,select,input{font:inherit;color:inherit}
+button{background:var(--chip);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.link{background:none;border:none;color:var(--accent);padding:4px 6px}
+select,input{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 9px;width:100%}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px}
+.head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.head h3{margin:0;font-size:1.05rem}
+.muted{color:var(--muted);font-size:.88rem}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:10px}
+.step{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.step.done{background:var(--okbg);border-color:transparent}
+.step.late{background:var(--badbg);border-color:transparent}
+.step.soon{background:var(--warnbg);border-color:transparent}
+.step .t{font-weight:600;font-size:.9rem}
+.step .s{font-size:.85rem;color:var(--muted)}
+.step button{margin-top:6px;padding:4px 9px;font-size:.85rem}
+.badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.78rem;background:var(--chip)}
+.badge.ok{background:var(--okbg);color:var(--ok)}
+.badge.bad{background:var(--badbg);color:var(--bad)}
+.badge.warn{background:var(--warnbg);color:var(--warn)}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);width:min(560px,calc(100vw - 32px));padding:16px}
+dialog::backdrop{background:rgba(0,0,0,.4)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid .full{grid-column:1/-1}
+label{display:block;font-size:.85rem;color:var(--muted)}
+label input,label select{margin-top:3px}
+.check{display:flex;gap:8px;align-items:center;color:var(--text)}
+.check input{width:auto}
+.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap}
+.empty{text-align:center;color:var(--muted);padding:30px 0}
+@media (max-width:520px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Arztrechnungen</h1>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="bar">
+    <button class="primary" id="addBtn">+ Neue Rechnung</button>
+    <select id="filter" style="width:auto">
+      <option value="open">Offene</option>
+      <option value="pay">a) Noch zu überweisen</option>
+      <option value="submit">b) Noch einzureichen</option>
+      <option value="refund">c) Erstattung ausstehend</option>
+      <option value="done">Erledigt</option>
+      <option value="all">Alle</option>
+    </select>
+    <span style="flex:1"></span>
+    <button id="exportBtn">Sichern (JSON)</button>
+    <button id="importBtn">Laden</button>
+    <button id="csvBtn">CSV</button>
+    <input type="file" id="importFile" accept="application/json" hidden>
+  </div>
+
+  <div id="list"></div>
+  <p class="muted">Daten werden nur in diesem Browser gespeichert. Bitte regelmäßig mit „Sichern“ eine Kopie anlegen.</p>
+</main>
+
+<dialog id="dlg">
+  <form id="form" method="dialog">
+    <h3 id="dlgTitle" style="margin-top:0">Rechnung</h3>
+    <div class="grid">
+      <label class="full">Arzt / Leistungserbringer<input name="doctor" required></label>
+      <label>Rechnungsnummer<input name="number"></label>
+      <label>Betrag (€)<input name="amount" type="number" step="0.01" min="0" required></label>
+      <label>Rechnungsdatum<input name="date" type="date" required></label>
+      <label>Zahlungsfrist bis<input name="due" type="date"></label>
+      <label>Beihilfe-Satz (%)<input name="bhRate" type="number" min="0" max="100" step="1"></label>
+      <label>PKV-Anteil (%)<input name="pkvRate" type="number" min="0" max="100" step="1"></label>
+      <label class="full check"><input type="checkbox" name="pkvSkip"> Nicht bei der PKV einreichen (z.&nbsp;B. wegen Beitragsrückerstattung)</label>
+
+      <label>a) Überwiesen am<input name="paidOn" type="date"></label>
+      <span></span>
+      <label>b) Beihilfe eingereicht am<input name="bhSent" type="date"></label>
+      <label>b) PKV eingereicht am<input name="pkvSent" type="date"></label>
+      <label>c) Beihilfe erhalten am<input name="bhRecvOn" type="date"></label>
+      <label>c) Beihilfe Betrag (€)<input name="bhRecv" type="number" step="0.01" min="0"></label>
+      <label>c) PKV erhalten am<input name="pkvRecvOn" type="date"></label>
+      <label>c) PKV Betrag (€)<input name="pkvRecv" type="number" step="0.01" min="0"></label>
+      <label class="full">Notiz<input name="note"></label>
+    </div>
+    <div class="actions">
+      <button type="button" id="delBtn" style="margin-right:auto;color:var(--bad)">Löschen</button>
+      <button type="button" id="cancelBtn">Abbrechen</button>
+      <button type="submit" class="primary">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const KEY = 'arztrechnungen.v1';
+const SETTINGS_KEY = 'arztrechnungen.settings.v1';
+const REFUND_WAIT_DAYS = 28;      // Erstattung gilt danach als "überfällig"
+const BH_DEADLINE_MONTHS = 12;    // übliche Beihilfe-Antragsfrist (je nach Land/Bund prüfen)
+
+let bills = load(KEY, []);
+let settings = load(SETTINGS_KEY, { bhRate: 50, pkvRate: 50, payDays: 30 });
+
+function load(k, fb){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; }catch(e){ return fb; } }
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(bills)); localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }catch(e){} }
+
+const $ = s => document.querySelector(s);
+const eur = n => (Number(n)||0).toLocaleString('de-DE',{style:'currency',currency:'EUR'});
+const today = () => new Date().toISOString().slice(0,10);
+const fmt = d => d ? new Date(d+'T00:00:00').toLocaleDateString('de-DE') : '';
+const daysBetween = (a,b) => Math.round((new Date(b+'T00:00:00') - new Date(a+'T00:00:00'))/86400000);
+const addDays = (d,n) => { const x=new Date(d+'T00:00:00'); x.setDate(x.getDate()+n); return x.toISOString().slice(0,10); };
+const addMonths = (d,n) => { const x=new Date(d+'T00:00:00'); x.setMonth(x.getMonth()+n); return x.toISOString().slice(0,10); };
+const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function expected(b){
+  const bh = b.amount * (b.bhRate||0)/100;
+  const pkv = b.pkvSkip ? 0 : b.amount * (b.pkvRate||0)/100;
+  return { bh, pkv };
+}
+function state(b){
+  const needPay = !b.paidOn;
+  const needBh = !b.bhSent;
+  const needPkv = !b.pkvSkip && !b.pkvSent;
+  const waitBh = !!b.bhSent && !b.bhRecvOn;
+  const waitPkv = !b.pkvSkip && !!b.pkvSent && !b.pkvRecvOn;
+  const done = !needPay && !needBh && !needPkv && !waitBh && !waitPkv;
+  return { needPay, needBh, needPkv, waitBh, waitPkv, done };
+}
+
+function render(){
+  const t = today();
+  let toPay=0, refundOpen=0, ownShare=0, overdue=0;
+  for(const b of bills){
+    const s=state(b), e=expected(b);
+    if(s.needPay){ toPay+=b.amount; if(b.due && b.due<t) overdue++; }
+    if(!b.bhRecvOn) refundOpen+=e.bh;
+    if(!b.pkvSkip && !b.pkvRecvOn) refundOpen+=e.pkv;
+    if(s.done) ownShare += b.amount - (Number(b.bhRecv)||0) - (Number(b.pkvRecv)||0);
+  }
+  $('#tiles').innerHTML = `
+    <div class="tile"><b>${eur(toPay)}</b><span>a) noch zu überweisen${overdue?` · <span style="color:var(--bad)">${overdue} überfällig</span>`:''}</span></div>
+    <div class="tile"><b>${bills.filter(b=>{const s=state(b);return s.needBh||s.needPkv}).length}</b><span>b) noch einzureichen</span></div>
+    <div class="tile"><b>${eur(refundOpen)}</b><span>c) erwartete Erstattungen offen</span></div>
+    <div class="tile"><b>${eur(ownShare)}</b><span>Eigenanteil (erledigte)</span></div>`;
+
+  const f = $('#filter').value;
+  const list = bills.filter(b=>{
+    const s=state(b);
+    return f==='all' || (f==='open'&&!s.done) || (f==='done'&&s.done) ||
+      (f==='pay'&&s.needPay) || (f==='submit'&&(s.needBh||s.needPkv)) || (f==='refund'&&(s.waitBh||s.waitPkv));
+  }).sort((a,b)=> (a.date<b.date?1:-1));
+
+  if(!list.length){ $('#list').innerHTML = `<div class="empty">${bills.length?'Keine Rechnungen in dieser Ansicht.':'Noch keine Rechnungen erfasst.'}</div>`; return; }
+
+  $('#list').innerHTML = list.map(b=>{
+    const s=state(b), e=expected(b);
+    // a) Überweisung
+    let pay;
+    if(!s.needPay) pay = step('done','a) Überwiesen',`am ${fmt(b.paidOn)}`);
+    else { const late = b.due && b.due < t; const soon = b.due && !late && daysBetween(t,b.due)<=7;
+      pay = step(late?'late':soon?'soon':'','a) Überweisen', b.due?`fällig ${fmt(b.due)}${late?' – überfällig!':''}`:'offen', b.id,'paidOn','Heute überwiesen'); }
+    // b) + c) Beihilfe
+    const bhDeadline = addMonths(b.date, BH_DEADLINE_MONTHS);
+    let bh;
+    if(s.needBh){ const late = bhDeadline < t, soon = !late && daysBetween(t,bhDeadline) <= 60;
+      bh = step(late?'late':soon?'soon':'','b) Bei Beihilfe einreichen',`erwartet ${eur(e.bh)} · Frist ca. ${fmt(bhDeadline)}`, b.id,'bhSent','Heute eingereicht'); }
+    else bh = refundStep('Beihilfe', b.bhSent, b.bhRecvOn, b.bhRecv, e.bh, b.id, 'bh', t);
+    // b) + c) PKV
+    let pkv;
+    if(b.pkvSkip) pkv = step('','PKV','wird nicht eingereicht');
+    else if(s.needPkv) pkv = step('','b) Bei PKV einreichen',`erwartet ${eur(e.pkv)}`, b.id,'pkvSent','Heute eingereicht');
+    else pkv = refundStep('PKV', b.pkvSent, b.pkvRecvOn, b.pkvRecv, e.pkv, b.id, 'pkv', t);
+
+    const badge = s.done ? '<span class="badge ok">erledigt</span>' : '<span class="badge">offen</span>';
+    return `<div class="card">
+      <div class="head">
+        <div><h3>${esc(b.doctor)} ${badge}</h3>
+          <div class="muted">${fmt(b.date)}${b.number?` · Nr. ${esc(b.number)}`:''}${b.note?` · ${esc(b.note)}`:''}</div></div>
+        <div style="text-align:right"><b>${eur(b.amount)}</b><br><button class="link" data-edit="${b.id}">Bearbeiten</button></div>
+      </div>
+      <div class="steps">${pay}${bh}${pkv}</div>
+    </div>`;
+  }).join('');
+}
+
+function step(cls,title,sub,id,field,btn){
+  return `<div class="step ${cls}"><div class="t">${title}</div><div class="s">${sub}</div>${id?`<button data-id="${id}" data-field="${field}">${btn}</button>`:''}</div>`;
+}
+function refundStep(name, sent, recvOn, recv, exp, id, key, t){
+  if(recvOn){
+    const diff = (Number(recv)||0) - exp;
+    const note = Math.abs(diff) < 0.01 ? '' : ` <span class="badge ${diff<0?'warn':'ok'}">${diff<0?'':'+'}${eur(diff)} ggü. erwartet</span>`;
+    return step('done',`c) ${name} erhalten`,`${eur(recv)} am ${fmt(recvOn)}${note}`);
+  }
+  const waited = daysBetween(sent, t), late = waited > REFUND_WAIT_DAYS;
+  return step(late?'late':'',`c) ${name}-Erstattung prüfen`,`eingereicht ${fmt(sent)} (vor ${waited} Tagen)${late?' – bitte nachfragen':''} · erwartet ${eur(exp)}`, id, key+'Recv','Geld eingegangen');
+}
+
+// Schnell-Aktionen
+$('#list').addEventListener('click', ev=>{
+  const ed = ev.target.closest('[data-edit]'); if(ed) return openDlg(ed.dataset.edit);
+  const btn = ev.target.closest('button[data-field]'); if(!btn) return;
+  const b = bills.find(x=>x.id===btn.dataset.id); if(!b) return;
+  const f = btn.dataset.field;
+  if(f==='bhRecv' || f==='pkvRecv'){
+    const exp = expected(b)[f==='bhRecv'?'bh':'pkv'];
+    const v = prompt('Erhaltener Betrag (€):', exp.toFixed(2).replace('.',','));
+    if(v===null) return;
+    const n = parseFloat(v.replace(/\./g,'').replace(',','.'));
+    if(isNaN(n)) return alert('Ungültiger Betrag');
+    b[f] = n; b[f+'On'] = today();
+  } else b[f] = today();
+  save(); render();
+});
+
+// Dialog
+const form = $('#form'), dlg = $('#dlg');
+let editing = null;
+function openDlg(id){
+  editing = id || null;
+  const b = id ? bills.find(x=>x.id===id) : { date: today(), due: addDays(today(), settings.payDays), bhRate: settings.bhRate, pkvRate: settings.pkvRate };
+  $('#dlgTitle').textContent = id ? 'Rechnung bearbeiten' : 'Neue Rechnung';
+  $('#delBtn').hidden = !id;
+  for(const el of form.elements){ if(!el.name) continue;
+    if(el.type==='checkbox') el.checked = !!b[el.name]; else el.value = b[el.name] ?? ''; }
+  dlg.showModal();
+}
+form.date.addEventListener('change', ()=>{ if(!editing && form.date.value) form.due.value = addDays(form.date.value, settings.payDays); });
+form.bhRate.addEventListener('input', ()=>{ const v=Number(form.bhRate.value); if(!isNaN(v)&&v>=0&&v<=100) form.pkvRate.value = 100-v; });
+form.addEventListener('submit', ev=>{
+  ev.preventDefault();
+  const o = {};
+  for(const el of form.elements){ if(!el.name) continue;
+    if(el.type==='checkbox') o[el.name]=el.checked;
+    else if(el.type==='number') o[el.name] = el.value==='' ? null : Number(el.value);
+    else o[el.name] = el.value || null; }
+  if(editing){ Object.assign(bills.find(x=>x.id===editing), o); }
+  else { o.id = Date.now().toString(36)+Math.random().toString(36).slice(2,6); bills.push(o); }
+  settings.bhRate = o.bhRate ?? settings.bhRate; settings.pkvRate = o.pkvRate ?? settings.pkvRate;
+  save(); dlg.close(); render();
+});
+$('#cancelBtn').onclick = ()=>dlg.close();
+$('#delBtn').onclick = ()=>{ if(confirm('Rechnung wirklich löschen?')){ bills = bills.filter(x=>x.id!==editing); save(); dlg.close(); render(); } };
+$('#addBtn').onclick = ()=>openDlg();
+$('#filter').onchange = render;
+
+// Sichern / Laden / CSV
+function download(name, text, type){ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type})); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }
+$('#exportBtn').onclick = ()=>download(`arztrechnungen-${today()}.json`, JSON.stringify({bills,settings},null,2), 'application/json');
+$('#importBtn').onclick = ()=>$('#importFile').click();
+$('#importFile').onchange = async ev=>{
+  const file = ev.target.files[0]; if(!file) return;
+  try{ const d = JSON.parse(await file.text()); if(!Array.isArray(d.bills)) throw 0;
+    if(confirm(`${d.bills.length} Rechnungen laden? Die aktuellen Daten werden ersetzt.`)){ bills=d.bills; if(d.settings) settings=d.settings; save(); render(); }
+  }catch(e){ alert('Datei konnte nicht gelesen werden.'); }
+  ev.target.value='';
+};
+$('#csvBtn').onclick = ()=>{
+  const cols = ['doctor','number','date','amount','due','paidOn','bhRate','bhSent','bhRecvOn','bhRecv','pkvRate','pkvSkip','pkvSent','pkvRecvOn','pkvRecv','note'];
+  const head = ['Arzt','Rechnungsnr','Rechnungsdatum','Betrag','Fällig','Überwiesen','Beihilfe %','Beihilfe eingereicht','Beihilfe erhalten am','Beihilfe Betrag','PKV %','PKV nicht einreichen','PKV eingereicht','PKV erhalten am','PKV Betrag','Notiz'];
+  const q = v => { if(v==null) return ''; if(typeof v==='number') return String(v).replace('.',','); if(typeof v==='boolean') return v?'ja':'nein'; return '"'+String(v).replace(/"/g,'""')+'"'; };
+  download(`arztrechnungen-${today()}.csv`, '﻿'+[head.join(';'), ...bills.map(b=>cols.map(c=>q(b[c])).join(';'))].join('\n'), 'text/csv');
+};
+
+render();
+</script>
+</body>
+</html>
