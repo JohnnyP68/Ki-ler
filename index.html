@@ -71,13 +71,16 @@ input.auto{border-color:var(--warn);box-shadow:0 0 0 2px var(--warnbg)}
 <body>
 <main>
   <h1>Arztrechnungen</h1>
+  <div class="hint" id="storageWarn" hidden style="margin-bottom:12px">Achtung: In dieser Ansicht kann nichts dauerhaft gespeichert werden (Vorschau-Modus). Bitte die Datei im Browser öffnen.</div>
 
   <div class="tiles" id="tiles"></div>
 
   <div class="bar">
-    <button class="primary" id="scanBtn">📷 Rechnung scannen</button>
+    <button class="primary" id="camBtn">📷 Foto aufnehmen</button>
+    <button id="scanBtn">📄 Bild/PDF wählen</button>
     <button id="addBtn">+ Manuell</button>
-    <input type="file" id="scanFile" accept="image/*,application/pdf" multiple hidden>
+    <input type="file" id="camFile" accept="image/*" capture="environment" hidden>
+    <input type="file" id="scanFile" accept="image/*,application/pdf,.pdf,.heic,.heif" multiple hidden>
     <select id="filter" style="width:auto">
       <option value="open">Offene</option>
       <option value="pay">a) Noch zu überweisen</option>
@@ -135,13 +138,43 @@ input.auto{border-color:var(--warn);box-shadow:0 0 0 2px var(--warnbg)}
 </dialog>
 
 <dialog id="scanDlg">
-  <h3 style="margin-top:0">Rechnung wird gelesen …</h3>
+  <h3 style="margin-top:0" id="scanTitle">Rechnung wird gelesen …</h3>
+  <div class="muted" id="scanFileInfo"></div>
   <div class="prog"><div id="scanBar"></div></div>
   <div class="muted" id="scanStatus">Vorbereiten</div>
+  <div id="scanErr" hidden style="text-align:left;margin-top:10px">
+    <div class="hint" id="scanErrText" style="background:var(--badbg);color:var(--bad)"></div>
+    <div class="actions"><button type="button" id="scanManual">Manuell erfassen</button><button type="button" class="primary" id="scanClose">Schließen</button></div>
+  </div>
   <p class="muted" style="font-size:.8rem">Die Texterkennung läuft auf Ihrem Gerät – das Bild wird nicht hochgeladen. Beim ersten Mal werden ca. 10&nbsp;MB Erkennungsdaten geladen.</p>
 </dialog>
 
+<dialog id="askDlg">
+  <form method="dialog" id="askForm">
+    <h3 style="margin-top:0" id="askTitle"></h3>
+    <p id="askText" style="white-space:pre-line"></p>
+    <input id="askInput" hidden>
+    <div class="actions"><button type="button" id="askCancel">Abbrechen</button><button type="submit" class="primary" id="askOk">OK</button></div>
+  </form>
+</dialog>
+
 <script>
+// Eigene Hinweis-/Rückfrage-Fenster: alert/confirm/prompt werden in Vorschau-Ansichten (z. B. in Apps) oft blockiert
+function ask({ title='', text='', input=null, ok='OK', cancel='Abbrechen' }){
+  return new Promise(res=>{
+    const d = document.getElementById('askDlg'), inp = document.getElementById('askInput');
+    document.getElementById('askTitle').textContent = title;
+    document.getElementById('askText').textContent = text;
+    inp.hidden = input === null; inp.value = input ?? '';
+    document.getElementById('askOk').textContent = ok;
+    const c = document.getElementById('askCancel'); c.hidden = cancel === null; c.textContent = cancel || '';
+    let done = false; const finish = v => { if(done) return; done = true; d.close(); res(v); };
+    document.getElementById('askForm').onsubmit = e => { e.preventDefault(); finish(input === null ? true : inp.value); };
+    c.onclick = () => finish(input === null ? false : null);
+    d.oncancel = e => { e.preventDefault(); finish(input === null ? false : null); };
+    d.showModal(); if(input !== null) inp.focus();
+  });
+}
 const KEY = 'arztrechnungen.v1';
 const SETTINGS_KEY = 'arztrechnungen.settings.v1';
 const REFUND_WAIT_DAYS = 28;      // Erstattung gilt danach als "überfällig"
@@ -151,7 +184,8 @@ let bills = load(KEY, []);
 let settings = load(SETTINGS_KEY, { bhRate: 50, pkvRate: 50, payDays: 30 });
 
 function load(k, fb){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; }catch(e){ return fb; } }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(bills)); localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }catch(e){} }
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(bills)); localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }catch(e){ document.getElementById('storageWarn').hidden = false; } }
+try{ localStorage.setItem('arztrechnungen.test','1'); localStorage.removeItem('arztrechnungen.test'); }catch(e){ document.getElementById('storageWarn').hidden = false; }
 
 const $ = s => document.querySelector(s);
 const eur = n => (Number(n)||0).toLocaleString('de-DE',{style:'currency',currency:'EUR'});
@@ -248,17 +282,17 @@ function refundStep(name, sent, recvOn, recv, exp, id, key, t){
 }
 
 // Schnell-Aktionen
-$('#list').addEventListener('click', ev=>{
+$('#list').addEventListener('click', async ev=>{
   const ed = ev.target.closest('[data-edit]'); if(ed) return openDlg(ed.dataset.edit);
   const btn = ev.target.closest('button[data-field]'); if(!btn) return;
   const b = bills.find(x=>x.id===btn.dataset.id); if(!b) return;
   const f = btn.dataset.field;
   if(f==='bhRecv' || f==='pkvRecv'){
     const exp = expected(b)[f==='bhRecv'?'bh':'pkv'];
-    const v = prompt('Erhaltener Betrag (€):', exp.toFixed(2).replace('.',','));
+    const v = await ask({ title:'Geld eingegangen', text:'Erhaltener Betrag (€):', input: exp.toFixed(2).replace('.',','), ok:'Speichern' });
     if(v===null) return;
-    const n = parseFloat(v.replace(/\./g,'').replace(',','.'));
-    if(isNaN(n)) return alert('Ungültiger Betrag');
+    const n = parseFloat(String(v).replace(/\./g,'').replace(',','.'));
+    if(isNaN(n)) return ask({ title:'Ungültiger Betrag', text:'Bitte einen Betrag wie 120,50 eingeben.', cancel:null });
     b[f] = n; b[f+'On'] = today();
   } else b[f] = today();
   save(); render();
@@ -294,7 +328,7 @@ function openDlg(id, scan){
 form.addEventListener('input', ev=>ev.target.classList.remove('auto'));
 form.date.addEventListener('change', ()=>{ if(!editing && form.date.value) form.due.value = addDays(form.date.value, settings.payDays); });
 form.bhRate.addEventListener('input', ()=>{ const v=Number(form.bhRate.value); if(!isNaN(v)&&v>=0&&v<=100) form.pkvRate.value = 100-v; });
-form.addEventListener('submit', ev=>{
+form.addEventListener('submit', async ev=>{
   ev.preventDefault();
   const o = {};
   for(const el of form.elements){ if(!el.name) continue;
@@ -304,7 +338,7 @@ form.addEventListener('submit', ev=>{
   if(!editing){
     const dup = bills.find(x => (o.number && x.number === o.number && x.doctor === o.doctor) ||
                                 (x.amount === o.amount && x.date === o.date && x.doctor === o.doctor));
-    if(dup && !confirm(`Diese Rechnung scheint schon erfasst zu sein (${dup.doctor}, ${fmt(dup.date)}, ${eur(dup.amount)}). Trotzdem speichern?`)) return;
+    if(dup && !await ask({ title:'Schon erfasst?', text:`Diese Rechnung scheint schon erfasst zu sein (${dup.doctor}, ${fmt(dup.date)}, ${eur(dup.amount)}). Trotzdem speichern?`, ok:'Trotzdem speichern' })) return;
   }
   if(editing){ Object.assign(bills.find(x=>x.id===editing), o); }
   else { o.id = Date.now().toString(36)+Math.random().toString(36).slice(2,6); bills.push(o); }
@@ -312,7 +346,7 @@ form.addEventListener('submit', ev=>{
   save(); dlg.close(); render();
 });
 $('#cancelBtn').onclick = ()=>dlg.close();
-$('#delBtn').onclick = ()=>{ if(confirm('Rechnung wirklich löschen?')){ bills = bills.filter(x=>x.id!==editing); save(); dlg.close(); render(); } };
+$('#delBtn').onclick = async ()=>{ if(await ask({ title:'Löschen', text:'Rechnung wirklich löschen?', ok:'Löschen' })){ bills = bills.filter(x=>x.id!==editing); save(); dlg.close(); render(); } };
 $('#addBtn').onclick = ()=>openDlg();
 $('#filter').onchange = render;
 
@@ -323,8 +357,8 @@ $('#importBtn').onclick = ()=>$('#importFile').click();
 $('#importFile').onchange = async ev=>{
   const file = ev.target.files[0]; if(!file) return;
   try{ const d = JSON.parse(await file.text()); if(!Array.isArray(d.bills)) throw 0;
-    if(confirm(`${d.bills.length} Rechnungen laden? Die aktuellen Daten werden ersetzt.`)){ bills=d.bills; if(d.settings) settings=d.settings; save(); render(); }
-  }catch(e){ alert('Datei konnte nicht gelesen werden.'); }
+    if(await ask({ title:'Sicherung laden', text:`${d.bills.length} Rechnungen laden? Die aktuellen Daten werden ersetzt.`, ok:'Laden' })){ bills=d.bills; if(d.settings) settings=d.settings; save(); render(); }
+  }catch(e){ ask({ title:'Fehler', text:'Datei konnte nicht gelesen werden.', cancel:null }); }
   ev.target.value='';
 };
 $('#csvBtn').onclick = ()=>{
@@ -346,7 +380,7 @@ const LIB = {
 const loaded = {};
 function loadScript(src){
   return loaded[src] ||= new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res;
-    s.onerror=()=>{ delete loaded[src]; rej(new Error('Programmteil konnte nicht geladen werden – besteht eine Internetverbindung?')); };
+    s.onerror=()=>{ delete loaded[src]; rej(new Error('Das Erkennungsprogramm konnte nicht aus dem Internet geladen werden. Bitte Internetverbindung prüfen. Falls die Datei in einer App-Vorschau (z. B. in der Claude-App) geöffnet ist: Die Vorschau blockiert solche Inhalte – bitte die Datei im Browser (Chrome/Safari) öffnen.')); };
     document.head.appendChild(s); });
 }
 let ocrWorker = null, progressBase = 0, progressSpan = 1;
@@ -354,15 +388,21 @@ function setProgress(label, frac){
   $('#scanStatus').textContent = label;
   $('#scanBar').style.width = Math.round(Math.min(1, progressBase + progressSpan*(frac||0))*100) + '%';
 }
+function withTimeout(promise, ms, msg){
+  let t; return Promise.race([promise, new Promise((_,rej)=>{ t = setTimeout(()=>rej(new Error(msg)), ms); })]).finally(()=>clearTimeout(t));
+}
 async function getWorker(){
   if(ocrWorker) return ocrWorker;
-  await loadScript(LIB.tesseract);
-  ocrWorker = await Tesseract.createWorker('deu', 1, {
+  setProgress('Erkennungsprogramm wird geladen …', 0);
+  await withTimeout(loadScript(LIB.tesseract), 30000, 'Das Erkennungsprogramm konnte nicht geladen werden (Zeitüberschreitung). Besteht eine Internetverbindung?');
+  if(!window.Tesseract) throw new Error('Das Erkennungsprogramm konnte nicht geladen werden. Möglicherweise blockiert diese Ansicht Inhalte aus dem Internet – bitte die Datei direkt im Browser (Chrome/Safari) öffnen.');
+  ocrWorker = withTimeout(Tesseract.createWorker('deu', 1, {
     workerPath: LIB.tessWorker, corePath: LIB.tessCore, langPath: LIB.tessLang,
     logger: m => { if(m.status==='recognizing text') setProgress(`Texterkennung … ${Math.round(m.progress*100)} %`, m.progress);
-                   else if(/load|initializ/.test(m.status)) setProgress('Erkennung wird vorbereitet …', 0); }
-  });
-  return ocrWorker;
+                   else if(/load|initializ/.test(m.status)) setProgress('Erkennungsdaten werden geladen …', 0); },
+    errorHandler: e => console.error(e)
+  }), 120000, 'Die Erkennungsdaten (ca. 10 MB) konnten nicht geladen werden. Bitte Internetverbindung prüfen oder die Datei direkt im Browser öffnen.');
+  try{ return ocrWorker = await ocrWorker; }catch(e){ ocrWorker = null; throw e; }
 }
 async function ocr(canvas){ const w = await getWorker(); const { data } = await w.recognize(canvas); return data.text; }
 
@@ -381,11 +421,28 @@ function thumb(canvas){
   c.getContext('2d').drawImage(canvas,0,0,c.width,c.height); return c.toDataURL('image/jpeg',0.7);
 }
 async function imageFileToCanvas(file){
-  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-  return prepCanvas(bmp, bmp.width, bmp.height);
+  // 1. Weg: createImageBitmap (schnell); 2. Weg: <img>-Element (ältere Safari-Versionen, Sonderformate)
+  try{
+    const bmp = await createImageBitmap(file);
+    return prepCanvas(bmp, bmp.width, bmp.height);
+  }catch(e){
+    const url = URL.createObjectURL(file);
+    try{
+      const img = new Image(); img.src = url;
+      await img.decode();
+      return prepCanvas(img, img.naturalWidth, img.naturalHeight);
+    }catch(e2){
+      const heic = /hei[cf]/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+      throw new Error(heic
+        ? 'Das Foto ist im HEIC-Format, das dieser Browser nicht lesen kann. Bitte „Foto aufnehmen“ verwenden oder am iPhone unter Einstellungen › Kamera › Formate „Maximale Kompatibilität“ wählen.'
+        : `Die Datei „${file.name}“ konnte nicht als Bild gelesen werden (Typ: ${file.type || 'unbekannt'}).`);
+    }finally{ URL.revokeObjectURL(url); }
+  }
 }
 async function readPdf(file, pageNo){
-  await loadScript(LIB.pdf);
+  setProgress('PDF-Programm wird geladen …', 0);
+  await withTimeout(loadScript(LIB.pdf), 30000, 'Das PDF-Programm konnte nicht geladen werden. Besteht eine Internetverbindung?');
+  if(!window.pdfjsLib) throw new Error('Das PDF-Programm konnte nicht geladen werden. Bitte die Datei direkt im Browser öffnen.');
   pdfjsLib.GlobalWorkerOptions.workerSrc = LIB.pdfWorker;
   const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
   const pages = Math.min(pdf.numPages, 3); let text = '', preview = null;
@@ -412,7 +469,11 @@ async function readPdf(file, pageNo){
 }
 
 async function scanFiles(files){
-  $('#scanDlg').showModal(); progressBase = 0; progressSpan = 1/files.length; setProgress('Vorbereiten …', 0);
+  $('#scanTitle').textContent = 'Rechnung wird gelesen …';
+  $('#scanErr').hidden = true; $('.prog').hidden = false;
+  $('#scanFileInfo').textContent = 'Empfangen: ' + files.map(f=>`${f.name || 'Foto'} (${Math.max(1,Math.round(f.size/1024))} KB)`).join(', ');
+  if(!$('#scanDlg').open) $('#scanDlg').showModal();
+  progressBase = 0; progressSpan = 1/files.length; setProgress('Vorbereiten …', 0);
   let text = '', preview = null;
   try{
     for(let i=0;i<files.length;i++){
@@ -430,12 +491,28 @@ async function scanFiles(files){
     $('#scanDlg').close();
     openDlg(null, { text: text.trim(), preview, fields: parseInvoice(text) });
   }catch(e){
-    $('#scanDlg').close();
-    alert('Scannen fehlgeschlagen: ' + (e && e.message || e));
+    console.error(e);
+    $('#scanTitle').textContent = 'Scannen fehlgeschlagen';
+    $('.prog').hidden = true; $('#scanStatus').textContent = '';
+    $('#scanErrText').textContent = (e && e.message) || String(e);
+    $('#scanErr').hidden = false;
+    if(!$('#scanDlg').open) $('#scanDlg').showModal();
   }
 }
+$('#scanClose').onclick = ()=>$('#scanDlg').close();
+$('#scanManual').onclick = ()=>{ $('#scanDlg').close(); openDlg(); };
 $('#scanBtn').onclick = ()=>$('#scanFile').click();
-$('#scanFile').onchange = ev=>{ const fs=[...ev.target.files]; ev.target.value=''; if(fs.length) scanFiles(fs); };
+$('#camBtn').onclick = ()=>$('#camFile').click();
+// "change" und "input" lösen je nach Browser unterschiedlich aus – beide abfangen, aber nur einmal scannen
+let scanning = false;
+function onPicked(ev){
+  if(scanning) return;
+  const fs = [...(ev.target.files || [])];
+  if(!fs.length) return;
+  scanning = true;
+  scanFiles(fs).finally(()=>{ scanning = false; ev.target.value=''; });
+}
+for(const id of ['#scanFile','#camFile']){ $(id).addEventListener('change', onPicked); $(id).addEventListener('input', onPicked); }
 
 // ---------- Auswertung des erkannten Textes ----------
 const MONTHS = {januar:1,jan:1,februar:2,feb:2,märz:3,maerz:3,mär:3,april:4,apr:4,mai:5,juni:6,jun:6,juli:7,jul:7,august:8,aug:8,september:9,sep:9,sept:9,oktober:10,okt:10,november:11,nov:11,dezember:12,dez:12};
