@@ -60,7 +60,17 @@ label input,label select{margin-top:3px}
 @media (max-width:520px){.grid{grid-template-columns:1fr}}
 input.auto{border-color:var(--warn);box-shadow:0 0 0 2px var(--warnbg)}
 #scanBox{margin-bottom:12px}
-#scanBox img{max-width:100%;max-height:220px;border:1px solid var(--line);border-radius:8px;display:block;margin:6px 0}
+.thumbs{display:flex;gap:8px;overflow-x:auto;padding:6px 0}
+.thumbs figure{margin:0;flex:0 0 auto;text-align:center;font-size:.78rem;color:var(--muted)}
+.thumbs img{height:170px;max-width:150px;object-fit:contain;border:1px solid var(--line);border-radius:8px;display:block;background:#fff}
+.pages{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px;margin:10px 0}
+.page{position:relative;border:1px solid var(--line);border-radius:8px;padding:4px;text-align:center;font-size:.8rem}
+.page img,.page .pdf{width:100%;height:120px;object-fit:contain;border-radius:5px;display:block;background:#fff}
+.page .ctl button:disabled{opacity:.3;cursor:default}
+.page .pdf{display:flex;align-items:center;justify-content:center;font-size:1.6rem}
+.page .ctl{display:flex;justify-content:space-between;align-items:center;margin-top:3px}
+.page .ctl button{padding:2px 7px;font-size:.8rem}
+.stack{display:flex;flex-direction:column;gap:8px}
 #scanBox pre{white-space:pre-wrap;font-size:.78rem;max-height:200px;overflow:auto;background:var(--chip);padding:8px;border-radius:8px}
 .hint{background:var(--warnbg);color:var(--warn);border-radius:8px;padding:6px 10px;font-size:.85rem}
 #scanDlg{text-align:center}
@@ -76,11 +86,9 @@ input.auto{border-color:var(--warn);box-shadow:0 0 0 2px var(--warnbg)}
   <div class="tiles" id="tiles"></div>
 
   <div class="bar">
-    <button class="primary" id="camBtn">📷 Foto aufnehmen</button>
+    <button class="primary" id="camBtn">📷 Rechnung scannen</button>
     <button id="scanBtn">📄 Bild/PDF wählen</button>
     <button id="addBtn">+ Manuell</button>
-    <input type="file" id="camFile" accept="image/*" capture="environment" hidden>
-    <input type="file" id="scanFile" accept="image/*,application/pdf,.pdf,.heic,.heif" multiple hidden>
     <select id="filter" style="width:auto">
       <option value="open">Offene</option>
       <option value="pay">a) Noch zu überweisen</option>
@@ -105,7 +113,7 @@ input.auto{border-color:var(--warn);box-shadow:0 0 0 2px var(--warnbg)}
     <h3 id="dlgTitle" style="margin-top:0">Rechnung</h3>
     <div id="scanBox" hidden>
       <div class="hint" id="scanHint"></div>
-      <img id="scanImg" alt="Gescannte Rechnung">
+      <div id="scanImgs" class="thumbs"></div>
       <details><summary class="muted">Erkannter Text anzeigen</summary><pre id="scanText"></pre></details>
     </div>
     <div class="grid">
@@ -147,6 +155,23 @@ input.auto{border-color:var(--warn);box-shadow:0 0 0 2px var(--warnbg)}
     <div class="actions"><button type="button" id="scanManual">Manuell erfassen</button><button type="button" class="primary" id="scanClose">Schließen</button></div>
   </div>
   <p class="muted" style="font-size:.8rem">Die Texterkennung läuft auf Ihrem Gerät – das Bild wird nicht hochgeladen. Beim ersten Mal werden ca. 10&nbsp;MB Erkennungsdaten geladen.</p>
+</dialog>
+
+<dialog id="pagesDlg">
+  <h3 style="margin-top:0">Seiten der Rechnung</h3>
+  <p class="muted" id="pagesInfo" style="margin:0"></p>
+  <div id="pagesList" class="pages"></div>
+  <!-- Datei-Felder liegen im Seiten-Fenster, damit sie auch bei geöffnetem Fenster bedienbar sind -->
+  <input type="file" id="camFile" accept="image/*" capture="environment" hidden>
+  <input type="file" id="scanFile" accept="image/*,application/pdf,.pdf,.heic,.heif" multiple hidden>
+  <div class="stack">
+    <button type="button" id="addCam">📷 Weitere Seite fotografieren</button>
+    <button type="button" id="addFile">📄 Bild/PDF hinzufügen</button>
+  </div>
+  <div class="actions">
+    <button type="button" id="pagesCancel">Verwerfen</button>
+    <button type="button" class="primary" id="pagesGo">Auswerten</button>
+  </div>
 </dialog>
 
 <dialog id="askDlg">
@@ -320,7 +345,7 @@ function openDlg(id, scan){
     const missing = ['doctor','amount','date'].filter(k=>!(k in found)).map(k=>({doctor:'Arzt',amount:'Betrag',date:'Rechnungsdatum'}[k]));
     $('#scanHint').textContent = (n ? `${n} Felder automatisch erkannt (gelb markiert) – bitte prüfen.` : 'Es konnten keine Felder sicher erkannt werden.') +
       (missing.length ? ` Nicht gefunden: ${missing.join(', ')}.` : '');
-    $('#scanImg').hidden = !scan.preview; if(scan.preview) $('#scanImg').src = scan.preview;
+    $('#scanImgs').innerHTML = (scan.previews||[]).map((src,i)=>`<figure><img src="${src}" alt="Seite ${i+1}"><figcaption>Seite ${i+1}</figcaption></figure>`).join('');
     $('#scanText').textContent = scan.text || '(kein Text erkannt)';
   }
   dlg.showModal();
@@ -445,7 +470,7 @@ async function readPdf(file, pageNo){
   if(!window.pdfjsLib) throw new Error('Das PDF-Programm konnte nicht geladen werden. Bitte die Datei direkt im Browser öffnen.');
   pdfjsLib.GlobalWorkerOptions.workerSrc = LIB.pdfWorker;
   const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
-  const pages = Math.min(pdf.numPages, 3); let text = '', preview = null;
+  const pages = Math.min(pdf.numPages, 10); let text = '', previews = [];
   for(let p=1; p<=pages; p++){
     const page = await pdf.getPage(p);
     // 1. Versuch: eingebetteter Text (digitale PDF)
@@ -457,15 +482,15 @@ async function readPdf(file, pageNo){
     const vp = page.getViewport({ scale: 2 });
     const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
     await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
-    if(p===1) preview = thumb(c);
+    previews.push(thumb(c));
     // 2. Versuch: eingescannte PDF ohne Text → OCR
     if(pageText.replace(/\s/g,'').length < 40){
-      progressBase = (pageNo + (p-1)/pages); setProgress(`Seite ${p}: Texterkennung …`, 0);
+      progressBase = (pageNo + (p-1)/pages) * progressSpan; setProgress(`PDF-Seite ${p}: Texterkennung …`, 0);
       pageText = await ocr(prepCanvas(c, c.width, c.height));
     }
     text += pageText + '\n';
   }
-  return { text, preview };
+  return { text, previews };
 }
 
 async function scanFiles(files){
@@ -474,22 +499,22 @@ async function scanFiles(files){
   $('#scanFileInfo').textContent = 'Empfangen: ' + files.map(f=>`${f.name || 'Foto'} (${Math.max(1,Math.round(f.size/1024))} KB)`).join(', ');
   if(!$('#scanDlg').open) $('#scanDlg').showModal();
   progressBase = 0; progressSpan = 1/files.length; setProgress('Vorbereiten …', 0);
-  let text = '', preview = null;
+  let text = '', previews = [];
   try{
     for(let i=0;i<files.length;i++){
       progressBase = i/files.length;
       const f = files[i];
-      if(f.type === 'application/pdf' || /\.pdf$/i.test(f.name)){
-        const r = await readPdf(f, i); text += r.text + '\n'; preview ||= r.preview;
+      if(isPdf(f)){
+        const r = await readPdf(f, i); text += r.text + '\n'; previews.push(...r.previews);
       } else {
-        setProgress('Bild wird aufbereitet …', 0);
-        const c = await imageFileToCanvas(f); preview ||= thumb(c);
+        setProgress(`Seite ${i+1} von ${files.length}: Bild wird aufbereitet …`, 0);
+        const c = await imageFileToCanvas(f); previews.push(thumb(c));
         text += await ocr(c) + '\n';
       }
     }
     setProgress('Felder werden ausgewertet …', 1);
     $('#scanDlg').close();
-    openDlg(null, { text: text.trim(), preview, fields: parseInvoice(text) });
+    openDlg(null, { text: text.trim(), previews, fields: parseInvoice(text) });
   }catch(e){
     console.error(e);
     $('#scanTitle').textContent = 'Scannen fehlgeschlagen';
@@ -501,16 +526,53 @@ async function scanFiles(files){
 }
 $('#scanClose').onclick = ()=>$('#scanDlg').close();
 $('#scanManual').onclick = ()=>{ $('#scanDlg').close(); openDlg(); };
+// ---------- Seiten sammeln: mehrere Fotos/Dateien = ein Dokument ----------
+const isPdf = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
+let pages = [];   // { file, url }
+function addPages(files){
+  for(const f of files) pages.push({ file: f, url: isPdf(f) ? null : URL.createObjectURL(f) });
+  renderPages();
+  if(!$('#pagesDlg').open) $('#pagesDlg').showModal();
+}
+function clearPages(){ pages.forEach(p=>p.url && URL.revokeObjectURL(p.url)); pages = []; }
+function renderPages(){
+  const n = pages.length;
+  $('#pagesInfo').textContent = n === 1
+    ? 'Hat die Rechnung weitere Seiten? Dann jetzt hinzufügen – sonst „Auswerten“.'
+    : `${n} Seiten werden zusammen als eine Rechnung ausgewertet.`;
+  $('#pagesList').innerHTML = pages.map((p,i)=>`<div class="page">
+      ${p.url ? `<img src="${p.url}" alt="Seite ${i+1}" onerror="this.outerHTML='<div class=pdf>🖼️</div>'">` : `<div class="pdf" title="${esc(p.file.name)}">📄</div>`}
+      <div class="ctl">
+        <button type="button" data-move="${i}" ${i===0?'disabled':''} title="Nach vorne">◀</button>
+        <span>${i+1}</span>
+        <button type="button" data-del="${i}" title="Entfernen">✕</button>
+      </div></div>`).join('');
+  $('#pagesGo').textContent = n > 1 ? `Auswerten (${n} Seiten)` : 'Auswerten';
+  $('#pagesGo').disabled = !n;
+}
+$('#pagesList').addEventListener('click', ev=>{
+  const mv = ev.target.closest('[data-move]'), del = ev.target.closest('[data-del]');
+  if(mv){ const i = +mv.dataset.move; [pages[i-1], pages[i]] = [pages[i], pages[i-1]]; }
+  else if(del){ const [p] = pages.splice(+del.dataset.del, 1); if(p.url) URL.revokeObjectURL(p.url); }
+  else return;
+  renderPages();
+});
+$('#addCam').onclick = ()=>$('#camFile').click();
+$('#addFile').onclick = ()=>$('#scanFile').click();
+$('#pagesCancel').onclick = ()=>{ clearPages(); $('#pagesDlg').close(); };
+$('#pagesDlg').addEventListener('cancel', ()=>clearPages());
+$('#pagesGo').onclick = ()=>{
+  const fs = pages.map(p=>p.file);
+  $('#pagesDlg').close(); clearPages();
+  if(fs.length) scanFiles(fs);
+};
 $('#scanBtn').onclick = ()=>$('#scanFile').click();
 $('#camBtn').onclick = ()=>$('#camFile').click();
-// "change" und "input" lösen je nach Browser unterschiedlich aus – beide abfangen, aber nur einmal scannen
-let scanning = false;
+// "change" und "input" lösen je nach Browser unterschiedlich aus – beide abfangen, aber nur einmal übernehmen
 function onPicked(ev){
-  if(scanning) return;
   const fs = [...(ev.target.files || [])];
-  if(!fs.length) return;
-  scanning = true;
-  scanFiles(fs).finally(()=>{ scanning = false; ev.target.value=''; });
+  ev.target.value = '';   // leert die Auswahl, damit das zweite Ereignis nichts mehr findet
+  if(fs.length) addPages(fs);
 }
 for(const id of ['#scanFile','#camFile']){ $(id).addEventListener('change', onPicked); $(id).addEventListener('input', onPicked); }
 
